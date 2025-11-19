@@ -205,7 +205,15 @@
                         macro.
                     </p>
                     <textarea id="macro-text" class="mono" placeholder="Type Your Macro Here" onfocus="disableKeyHandlers()" onblur="enableKeyHandlers()"></textarea>
-                    <button onclick="sendMacro()">Run Macro</button>
+                    <div class="macro-controls">
+                        <button onclick="sendMacro()">Run Macro</button>
+                        <button onclick="stopMacro()" style="margin-left:8px;">Stop Macro</button>
+                        <input id="macro-name" type="text" placeholder="Macro name" class="mono" style="margin-left:8px;">
+                        <button onclick="saveMacro()">Save Macro</button>
+                        <select id="macro-presets-list" onchange="onMacroSelect()" style="margin-left:8px;"></select>
+                        <button onclick="loadMacro()">Load Preset</button>
+                        <button onclick="deleteMacro()">Delete Preset</button>
+                    </div>
                 </div>
             </section>
 

@@ -216,6 +216,51 @@ socket.on('error', function(errorMessage) {
     displayError(errorMessage);
 });
 
+// Track last started macro IDs per controller index
+let LAST_MACROS = {};
+
+socket.on('macro_started', function(payload) {
+    try {
+        let data = payload;
+        if (typeof payload === 'string') data = JSON.parse(payload);
+        let index = data[0];
+        let macro_id = data[1];
+        LAST_MACROS[index] = macro_id;
+        console.log('Macro started', index, macro_id);
+        displayError('Macro started: ' + macro_id);
+    } catch (e) {
+        console.log('Failed to parse macro_started payload', e);
+    }
+});
+
+socket.on('macro_stopped', function(payload) {
+    try {
+        let data = payload;
+        if (typeof payload === 'string') data = JSON.parse(payload);
+        let index = data[0];
+        let macro_id = data[1];
+        if (LAST_MACROS[index] === macro_id) delete LAST_MACROS[index];
+        console.log('Macro stopped', index, macro_id);
+        displayError('Macro stopped: ' + macro_id);
+    } catch (e) {
+        console.log('Failed to parse macro_stopped payload', e);
+    }
+});
+
+socket.on('macros_cleared', function(payload) {
+    try {
+        let index = payload;
+        if (typeof payload === 'string') {
+            try { index = JSON.parse(payload); } catch(e) {}
+        }
+        delete LAST_MACROS[index];
+        console.log('Macros cleared for', index);
+        displayError('Macros cleared for ' + index);
+    } catch (e) {
+        console.log('Failed to parse macros_cleared payload', e);
+    }
+});
+
 /**********************************************/
 /* Listeners and Startup Functionality */
 /**********************************************/
@@ -224,6 +269,18 @@ socket.on('error', function(errorMessage) {
 window.onload = function() {
     // Run the Loader animation
     setInterval(updateLoader, 85);
+    // Load saved macro from localStorage (if any)
+    try {
+        loadMacroLocal();
+    } catch (e) {
+        console.log("No saved macro to load or load failed:", e);
+    }
+    // Refresh macro presets dropdown
+    try {
+        refreshMacroPresetList();
+    } catch (e) {
+        console.log('Failed to refresh macro presets:', e);
+    }
     // // Print out the latency of setTimeout
     // measureTimeoutLatency.start(120, 60);
 }
@@ -645,6 +702,241 @@ function eventLoop() {
 function sendMacro() {
     let macro = HTML_MACRO_TEXT.value.toUpperCase();
     socket.emit('macro', JSON.stringify([NXBT_CONTROLLER_INDEX, macro]));
+}
+
+function stopMacro() {
+    let idx = NXBT_CONTROLLER_INDEX;
+    if (idx === false || idx === null || typeof idx === 'undefined') {
+        displayError('No controller index available to stop macro');
+        return;
+    }
+
+    let macro_id = LAST_MACROS[idx];
+    if (macro_id) {
+        socket.emit('stop_macro', JSON.stringify([idx, macro_id]));
+    } else {
+        // If we don't have a specific macro id, clear all macros for the controller
+        if (!confirm('No tracked macro id for this controller. Clear all macros for this controller instead?')) return;
+        socket.emit('clear_macros', JSON.stringify(idx));
+    }
+}
+
+// Save the macro textarea contents to localStorage
+function saveMacroLocal() {
+    try {
+        let macro = HTML_MACRO_TEXT.value;
+        localStorage.setItem('nxbt_macro', macro);
+        // Provide a small visual confirmation (console for now)
+        console.log('Macro saved to localStorage');
+    } catch (e) {
+        console.error('Failed to save macro to localStorage', e);
+        displayError('Failed to save macro locally');
+    }
+}
+
+// Load the macro textarea contents from localStorage
+function loadMacroLocal() {
+    try {
+        let saved = localStorage.getItem('nxbt_macro');
+        if (saved !== null) {
+            HTML_MACRO_TEXT.value = saved;
+            console.log('Loaded macro from localStorage');
+        } else {
+            console.log('No saved macro found in localStorage');
+        }
+    } catch (e) {
+        console.error('Failed to load macro from localStorage', e);
+        displayError('Failed to load macro locally');
+    }
+}
+
+// Macro presets (multiple named macros)
+function getMacroPresets() {
+    try {
+        let raw = localStorage.getItem('nxbt_macro_presets');
+        return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+        console.error('Failed to read macro presets from localStorage', e);
+        return {};
+    }
+}
+
+function setMacroPresets(presets) {
+    try {
+        localStorage.setItem('nxbt_macro_presets', JSON.stringify(presets));
+    } catch (e) {
+        console.error('Failed to write macro presets to localStorage', e);
+        displayError('Failed to save macro presets');
+    }
+}
+
+function refreshMacroPresetList() {
+    // This function supports both localStorage and server-side presets.
+    let select = document.getElementById('macro-presets-list');
+    if (!select) return;
+    select.innerHTML = '';
+    let placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.text = '-- Presets --';
+    select.appendChild(placeholder);
+
+    // Attempt server-side (global) fetch first, fallback to localStorage
+    serverGetPresets().then(presets => {
+        Object.keys(presets).forEach(name => {
+            let opt = document.createElement('option');
+            opt.value = name;
+            opt.text = name;
+            select.appendChild(opt);
+        });
+    }).catch(err => {
+        console.log('Failed to fetch global presets from server, falling back to localStorage', err);
+        let presets = getMacroPresets();
+        Object.keys(presets).forEach(name => {
+            let opt = document.createElement('option');
+            opt.value = name;
+            opt.text = name;
+            select.appendChild(opt);
+        });
+    });
+}
+
+// Server-side helpers
+function serverGetPresets() {
+    return fetch('/api/presets', {credentials: 'same-origin'})
+        .then(resp => {
+            if (!resp.ok) throw new Error('Network response was not ok');
+            return resp.json();
+        })
+        .then(json => json.presets || {});
+}
+
+function serverSavePreset(name, macro) {
+    return fetch('/api/presets/' + encodeURIComponent(name), {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({macro: macro}),
+        credentials: 'same-origin'
+    }).then(resp => {
+        if (!resp.ok) throw new Error('Failed to save preset on server');
+    });
+}
+
+function serverDeletePreset(name) {
+    return fetch('/api/presets/' + encodeURIComponent(name), {
+        method: 'DELETE',
+        credentials: 'same-origin'
+    }).then(resp => {
+        if (!resp.ok) throw new Error('Failed to delete preset on server');
+    });
+}
+
+function saveMacro() {
+    let nameInput = document.getElementById('macro-name');
+    if (!nameInput) {
+        displayError('Preset name input missing');
+        return;
+    }
+    let name = nameInput.value.trim();
+    if (!name) {
+        displayError('Please enter a preset name');
+        return;
+    }
+
+    // Try saving to the global server preset store; fallback to localStorage on failure
+    serverGetPresets().then(presets => {
+        if (presets.hasOwnProperty(name)) {
+            if (!confirm('Preset "' + name + '" already exists on server. Overwrite?')) return;
+        }
+        return serverSavePreset(name, HTML_MACRO_TEXT.value);
+    }).then(() => {
+        refreshMacroPresetList();
+        console.log('Saved preset on server', name);
+    }).catch(err => {
+        console.log('Server save failed, falling back to localStorage:', err);
+        let presets = getMacroPresets();
+        if (presets.hasOwnProperty(name)) {
+            if (!confirm('Preset "' + name + '" already exists. Overwrite?')) {
+                return;
+            }
+        }
+        presets[name] = HTML_MACRO_TEXT.value;
+        setMacroPresets(presets);
+        refreshMacroPresetList();
+        console.log('Saved preset locally', name);
+    });
+}
+
+function onMacroSelect() {
+    let select = document.getElementById('macro-presets-list');
+    let nameInput = document.getElementById('macro-name');
+    if (!select) return;
+    if (nameInput && select.value) {
+        nameInput.value = select.value;
+    }
+}
+
+function loadMacro() {
+    let select = document.getElementById('macro-presets-list');
+    if (!select || !select.value) {
+        displayError('No preset selected');
+        return;
+    }
+    let name = select.value;
+    // Try to load from server global presets first
+    serverGetPresets().then(presets => {
+        if (!presets.hasOwnProperty(name)) {
+            // Fallback to localStorage if not found on server
+            let local = getMacroPresets();
+            if (local.hasOwnProperty(name)) {
+                HTML_MACRO_TEXT.value = local[name];
+                console.log('Loaded preset from localStorage (server missing)', name);
+                return;
+            }
+            displayError('Preset not found');
+            return;
+        }
+        HTML_MACRO_TEXT.value = presets[name];
+        console.log('Loaded preset from server', name);
+    }).catch(err => {
+        console.log('Failed to load preset from server, falling back to localStorage', err);
+        let presets = getMacroPresets();
+        if (!presets.hasOwnProperty(name)) {
+            displayError('Preset not found');
+            return;
+        }
+        HTML_MACRO_TEXT.value = presets[name];
+        console.log('Loaded preset', name);
+    });
+}
+
+function deleteMacro() {
+    let select = document.getElementById('macro-presets-list');
+    if (!select || !select.value) {
+        displayError('No preset selected');
+        return;
+    }
+    let name = select.value;
+    if (!confirm('Delete preset "' + name + '"?')) return;
+    // Try deleting from global server presets first, fallback to localStorage
+    serverDeletePreset(name).then(() => {
+        refreshMacroPresetList();
+        let nameInput = document.getElementById('macro-name');
+        if (nameInput) nameInput.value = '';
+        console.log('Deleted preset on server', name);
+    }).catch(err => {
+        console.log('Failed to delete preset on server, trying localStorage', err);
+        let presets = getMacroPresets();
+        if (!presets.hasOwnProperty(name)) {
+            displayError('Preset not found');
+            return;
+        }
+        delete presets[name];
+        setMacroPresets(presets);
+        refreshMacroPresetList();
+        let nameInput = document.getElementById('macro-name');
+        if (nameInput) nameInput.value = '';
+        console.log('Deleted preset locally', name);
+    });
 }
 
 /**********************************************/
